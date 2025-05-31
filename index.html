@@ -1102,17 +1102,21 @@
         // --- Contact Form Submission ---
         function displayNotification(status, message) {
             if (!contactForm) return;
-            // Ensure feedbackDiv exists
             if (!feedbackDiv) {
                 feedbackDiv = document.createElement('div');
                 feedbackDiv.id = 'form-feedback-message';
-                contactForm.parentNode.insertBefore(feedbackDiv, contactForm.nextSibling);
+                // Insert after the button, or adjust as needed for your layout
+                const submitBtn = contactForm.querySelector('.btn-submit');
+                if (submitBtn && submitBtn.parentNode) {
+                    submitBtn.parentNode.insertBefore(feedbackDiv, submitBtn.nextSibling);
+                } else {
+                    contactForm.appendChild(feedbackDiv); // Fallback
+                }
             }
             feedbackDiv.textContent = message;
             feedbackDiv.style.display = 'block';
-            feedbackDiv.dataset.status = status; // Store status for theme change
+            feedbackDiv.dataset.status = status; 
 
-            // Apply theme-specific styles
             const isLight = body.classList.contains('light-theme');
             let bg, text, border;
             if (status === 'success') {
@@ -1129,88 +1133,93 @@
             feedbackDiv.style.padding = '12px 15px';
             feedbackDiv.style.marginTop = '20px';
             feedbackDiv.style.textAlign = 'left';
+            feedbackDiv.style.clear = 'both'; // ensure it clears the floated button
         }
 
         if (contactForm) {
             contactForm.addEventListener('submit', function(event) {
-                event.preventDefault(); // Prevent default browser form submission
+                event.preventDefault(); 
 
                 const submitButton = contactForm.querySelector('.btn-submit');
                 if (!submitButton) return;
 
                 const originalButtonText = submitButton.innerHTML;
-                submitButton.disabled = true; // Disable button to prevent multiple submissions
-                submitButton.innerHTML = 'Sending... <i class="fas fa-spinner fa-spin"></i>'; // Show loading state
+                submitButton.disabled = true; 
+                submitButton.innerHTML = 'Sending... <i class="fas fa-spinner fa-spin"></i>'; 
 
-                // Hide any previous feedback message
                 if (feedbackDiv) {
                     feedbackDiv.style.display = 'none';
                 }
 
-                // Create FormData object from the form
                 const formData = new FormData(contactForm);
-                // Ensure the action URL for Formspree always includes the ?_json=true parameter
-                // This is vital for it to return a JSON response instead of a redirect.
                 let actionUrl = contactForm.action;
-                if (!actionUrl.includes('?_json=true')) {
-                    actionUrl += '?_json=true';
+                if (!actionUrl.includes('?_json=true')) { // Ensure _json=true for AJAX
+                    actionUrl += (actionUrl.includes('?') ? '&' : '?') + '_json=true';
                 }
 
-
-                // Use Fetch API to send the form data to Formspree
                 fetch(actionUrl, {
                     method: 'POST',
-                    body: formData, // FormData automatically handles Content-Type for form data
+                    body: formData,
                     headers: {
-                        'Accept': 'application/json' // Crucial: tell Formspree we want a JSON response
+                        'Accept': 'application/json' 
                     }
                 })
                 .then(response => {
-                    // Check if the HTTP status code indicates a successful response (2xx)
-                    if (!response.ok) {
-                        // If there's an HTTP error, try to get Formspree's error message (if it's JSON)
-                        return response.json().catch(() => {
-                            // If response is not JSON or parsing fails, create a generic error message
-                            return { message: `HTTP error! Status: ${response.status}` };
-                        })
-                        .then(errorData => {
-                            // Throw an error with Formspree's message or the generic HTTP error
-                            throw new Error(errorData.message || `HTTP error! Status: ${response.status}`);
-                        });
+                    if (!response.ok) { // Handles HTTP errors like 4xx, 5xx
+                        return response.json() // Try to parse error JSON from Formspree
+                            .then(errorData => {
+                                console.error('Formspree error response (JSON):', errorData);
+                                let detailedErrorMessage = `Submission failed. Status: ${response.status}.`;
+                                if (errorData) {
+                                    if (errorData.error) { // Formspree often uses "error" field
+                                        detailedErrorMessage = errorData.error;
+                                    } else if (Array.isArray(errorData.errors) && errorData.errors.length > 0) {
+                                        // Concatenate messages from the 'errors' array (e.g. field-specific errors)
+                                        detailedErrorMessage = errorData.errors.map(err => {
+                                            let msg = err.message || "Invalid input";
+                                            if (err.field) {
+                                                msg = `Field '${err.field}': ${msg}`;
+                                            }
+                                            return msg;
+                                        }).join('; ');
+                                    } else if (errorData.message) { // Fallback to a general 'message' field
+                                        detailedErrorMessage = errorData.message;
+                                    }
+                                }
+                                throw new Error(detailedErrorMessage);
+                            })
+                            .catch(jsonError => { // Catches if response.json() itself fails (e.g., non-JSON error body)
+                                console.error('Formspree error response (Not JSON or JSON parse error):', jsonError);
+                                // Try to get text content if JSON parsing failed
+                                return response.text().then(textData => {
+                                    console.error('Formspree error response (Text):', textData);
+                                    let fallbackMessage = (textData && textData.trim().length > 0 && textData.length < 200) ? textData.trim() : `HTTP error! Status: ${response.status}. Please check your input or try again.`;
+                                    throw new Error(fallbackMessage);
+                                });
+                            });
                     }
-                    // If HTTP status is OK, try to parse as JSON.
-                    // If parsing fails (e.g., Formspree sent HTML despite ?_json=true),
-                    // we'll assume it's a success since the status was 2xx.
-                    return response.json().catch(error => {
-                        console.warn("Formspree response was not valid JSON or was unexpected:", error);
-                        // If we received a 2xx response but couldn't parse JSON, it's likely a success.
-                        return { success: "true", message: "Message sent successfully! Thank you." };
+                    // For 2xx responses, expect JSON. If not, it's still likely a success indication.
+                    return response.json().catch(() => {
+                        console.warn("Formspree success response was not valid JSON, but HTTP status was OK.");
+                        return { success: "true", message: "Message sent successfully! (Server sent non-JSON success response)" };
                     });
                 })
                 .then(data => {
-                    // Now 'data' will either be Formspree's actual JSON or our fallback success object.
-                    // Formspree returns { success: "true", message: "..." } on success.
-                    // Or { error: "...", errors: [...] } on client-side validation errors or general errors.
-                    if (data.success === "true" || data.ok === true) { // Also check for data.ok, a simpler success response Formspree might send.
+                    if (data.success === "true" || data.ok === true) { 
                         displayNotification('success', data.message || 'Message sent successfully! Thank you.');
-                        contactForm.reset(); // Clear the form fields on successful submission
-                    } else if (data.error) {
-                        // Handle Formspree specific errors like rate limits, etc.
-                        displayNotification('error', data.message || data.error || 'Submission failed. Please try again.');
+                        contactForm.reset(); 
                     } else {
-                        // Fallback for truly unexpected JSON response that is neither a clear success nor error structure.
-                        displayNotification('error', data.message || 'An unexpected response was received. Please try again later.');
+                        // This case should ideally be caught by !response.ok, but as a fallback:
+                        displayNotification('error', data.error || data.message || 'Submission failed due to an unexpected issue.');
                     }
                 })
-                .catch(error => {
+                .catch(error => { // Catches errors thrown from the .then chain (including network errors)
                     console.error('Form submission general error:', error);
-                    // Use error.message from the thrown Error, or a generic network error message
-                    displayNotification('error', error.message || 'There was a network error or server issue. Please try again.');
+                    displayNotification('error', error.message || 'A network error occurred or the server is unreachable. Please try again.');
                 })
                 .finally(() => {
-                    // This block always runs, regardless of success or failure
-                    submitButton.disabled = false; // Re-enable the submit button
-                    submitButton.innerHTML = originalButtonText; // Restore original button text
+                    submitButton.disabled = false; 
+                    submitButton.innerHTML = originalButtonText; 
                 });
             });
         }
@@ -1224,7 +1233,7 @@
                 });
             }, { threshold: 0.1, rootMargin: '0px 0px -50px 0px' });
             fadeElements.forEach(el => { el.style.opacity = '0'; el.style.transform = 'translateY(30px)'; el.style.transition = 'opacity 0.6s ease-out, transform 0.6s ease-out'; fadeInObserver.observe(el); });
-        } else { // Fallback for older browsers
+        } else { 
             fadeElements.forEach(el => { el.style.opacity = '1'; el.style.transform = 'translateY(0)'; });
         }
 
